@@ -7,7 +7,7 @@ import { computeRegimes } from '../models/hmm';
 import { computeAlpha } from '../models/alpha';
 import { computeSwingSignal } from '../models/swingSignal';
 
-const REFRESH_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 export function useStockData() {
   const [status, setStatus] = useState('idle');
