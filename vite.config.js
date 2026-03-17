@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react'
 // Example: VITE_BASE_PATH=/microstructure-edge/
 export default defineConfig({
   plugins: [react()],
-  base: process.env.VITE_BASE_PATH || '/',
+  base: '/react-swing-trade/',
   build: {
     outDir: 'dist',
     rollupOptions: {
