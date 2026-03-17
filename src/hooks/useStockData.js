@@ -110,7 +110,8 @@ export function useStockData() {
     } finally {
       setLoadingStep('');
     }
-  }, []); // eslint-disable-line
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scheduleNextRefresh]);
 
   // ── Countdown + auto-refresh scheduler ────────────────────────────────────
   const scheduleNextRefresh = useCallback(() => {
@@ -138,11 +139,19 @@ export function useStockData() {
 
   // Clean up timers on unmount
   useEffect(() => {
+    // Resume refresh when tab becomes visible again (browsers pause timers on hidden tabs)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && autoRefRef.current && symbolRef.current) {
+        analyze(symbolRef.current, true);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
     return () => {
       clearTimeout(refreshTimer.current);
       clearInterval(countdownTimer.current);
+      document.removeEventListener('visibilitychange', onVisible);
     };
-  }, []);
+  }, [analyze]);
 
   const toggleAutoRefresh = useCallback(() => {
     setAutoRefresh(prev => {
