@@ -16,7 +16,7 @@ function Header({ symbol, quote, usingHourly, countdown, autoRefresh, onToggle, 
   // Format countdown mm:ss
   const mins = countdown != null ? Math.floor(countdown / 60) : null;
   const secs = countdown != null ? String(countdown % 60).padStart(2, '0') : null;
-  const countdownPct = countdown != null ? (countdown / 600) * 100 : 0;
+  const countdownPct = countdown != null ? (countdown / 300) * 100 : 0;
 
   return (
     <header style={{
