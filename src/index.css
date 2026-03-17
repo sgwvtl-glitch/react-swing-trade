@@ -1,0 +1,178 @@
+/* ─── Reset & Root ─────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg-base:      #060810;
+  --bg-panel:     #0c0f1a;
+  --bg-card:      #111526;
+  --bg-hover:     #161b2e;
+  --border:       rgba(0, 180, 216, 0.15);
+  --border-bright:rgba(0, 180, 216, 0.4);
+
+  --text-primary: #e2e8f0;
+  --text-secondary:#8892a4;
+  --text-dim:     #4a5568;
+
+  --green:        #00ff88;
+  --green-dim:    rgba(0, 255, 136, 0.15);
+  --green-glow:   rgba(0, 255, 136, 0.4);
+  --cyan:         #00b4d8;
+  --cyan-dim:     rgba(0, 180, 216, 0.12);
+  --red:          #ff4560;
+  --red-dim:      rgba(255, 69, 96, 0.15);
+  --amber:        #ffc107;
+  --amber-dim:    rgba(255, 193, 7, 0.15);
+
+  --font-mono:   'JetBrains Mono', 'Fira Code', monospace;
+  --font-display:'Syne', sans-serif;
+
+  --radius:       4px;
+  --radius-lg:    8px;
+  --transition:   0.15s ease;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* Scanline overlay */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent 3px,
+    rgba(0, 0, 0, 0.04) 3px,
+    rgba(0, 0, 0, 0.04) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+  mix-blend-mode: overlay;
+}
+
+#root { min-height: 100vh; }
+
+/* ─── Scrollbar ─────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: var(--bg-base); }
+::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 2px; }
+
+/* ─── Utilities ─────────────────────────────────────────────────── */
+.mono { font-family: var(--font-mono); }
+.display { font-family: var(--font-display); }
+
+.text-green   { color: var(--green); }
+.text-cyan    { color: var(--cyan); }
+.text-red     { color: var(--red); }
+.text-amber   { color: var(--amber); }
+.text-dim     { color: var(--text-secondary); }
+.text-faint   { color: var(--text-dim); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.badge-green  { background: var(--green-dim);  color: var(--green); border: 1px solid rgba(0,255,136,.3); }
+.badge-red    { background: var(--red-dim);    color: var(--red);   border: 1px solid rgba(255,69,96,.3); }
+.badge-amber  { background: var(--amber-dim);  color: var(--amber); border: 1px solid rgba(255,193,7,.3); }
+.badge-cyan   { background: var(--cyan-dim);   color: var(--cyan);  border: 1px solid rgba(0,180,216,.3); }
+.badge-dim    { background: rgba(255,255,255,.05); color: var(--text-secondary); border: 1px solid var(--border); }
+
+/* ─── Panel / Card ──────────────────────────────────────────────── */
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(0, 180, 216, 0.04);
+}
+
+.panel-title {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--cyan);
+}
+
+.panel-body { padding: 16px; }
+
+/* ─── Metric Row ─────────────────────────────────────────────────── */
+.metric-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.metric-row:last-child { border-bottom: none; }
+.metric-label { color: var(--text-secondary); font-size: 11px; }
+.metric-value { font-size: 13px; font-weight: 500; }
+
+/* ─── Progress Bar ───────────────────────────────────────────────── */
+.progress-bar {
+  height: 4px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.6s ease;
+}
+
+/* ─── Animations ─────────────────────────────────────────────────── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+@keyframes scanline {
+  0%   { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+.animate-in { animation: fadeIn 0.4s ease both; }
+.pulse { animation: pulse 2s infinite; }
+
+/* Staggered children */
+.stagger > *:nth-child(1) { animation-delay: 0.05s; }
+.stagger > *:nth-child(2) { animation-delay: 0.10s; }
+.stagger > *:nth-child(3) { animation-delay: 0.15s; }
+.stagger > *:nth-child(4) { animation-delay: 0.20s; }
+.stagger > *:nth-child(5) { animation-delay: 0.25s; }
+.stagger > *:nth-child(6) { animation-delay: 0.30s; }
+.stagger > *:nth-child(7) { animation-delay: 0.35s; }
