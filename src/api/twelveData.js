@@ -6,7 +6,7 @@
  * - Exponential backoff on 429
  */
 
-import { TWELVE_DATA_API_KEY } from '../config.js';
+const TWELVE_DATA_API_KEY = '934f233f1c934c92a767bb9e52191d6d';
 
 const BASE_URL = 'https://api.twelvedata.com';
 const PROXY    = 'https://corsproxy.io/?url=';
