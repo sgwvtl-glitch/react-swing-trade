@@ -9,7 +9,11 @@
 const TWELVE_DATA_API_KEY = '934f233f1c934c92a767bb9e52191d6d';
 
 const BASE_URL = 'https://api.twelvedata.com';
-const PROXY    = 'https://corsproxy.io/?url=';
+const PROXIES = [
+  url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  url => `https://corsproxy.io/?url=${encodeURIComponent(url)}&_=${Date.now()}`,
+];
 
 // ── Token Bucket (8 req / 60s) ───────────────────────────────────────────────
 const BUCKET = { tokens: 8, lastRefill: Date.now(), queue: [], draining: false };
@@ -44,39 +48,63 @@ function acquireToken() {
 }
 
 // ── Core fetch with CORS proxy + retry ───────────────────────────────────────
-async function tdFetch(endpoint, params, attempt = 0) {
+async function tdFetch(endpoint, params, attempt = 0, proxyIdx = 0) {
   await acquireToken();
 
   const target = new URL(`${BASE_URL}${endpoint}`);
   Object.entries(params).forEach(([k, v]) => target.searchParams.set(k, v));
 
-  const proxied = `${PROXY}${encodeURIComponent(target.toString())}`;
+  const proxyUrl = PROXIES[proxyIdx](target.toString());
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15_000);
 
   try {
-    const res = await fetch(proxied, { signal: controller.signal });
+    const res = await fetch(proxyUrl, {
+      signal: controller.signal,
+      headers: { 'Accept': 'application/json' },
+    });
     clearTimeout(timeout);
 
     if (res.status === 429) {
       const delay = Math.min(2000 * 2 ** attempt, 32_000);
+      console.warn(`Rate limited, retrying in ${delay}ms`);
       await new Promise(r => setTimeout(r, delay));
-      return tdFetch(endpoint, params, attempt + 1);
+      return tdFetch(endpoint, params, attempt + 1, proxyIdx);
     }
 
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    // Proxy itself failed — try next proxy
+    if (!res.ok) {
+      if (proxyIdx < PROXIES.length - 1) {
+        console.warn(`Proxy ${proxyIdx} failed (${res.status}), trying next…`);
+        return tdFetch(endpoint, params, 0, proxyIdx + 1);
+      }
+      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    }
 
-    const data = await res.json();
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); }
+    catch { throw new Error('Invalid JSON from proxy'); }
+
     if (data.status === 'error') throw new Error(data.message || 'Twelve Data error');
     return data;
 
   } catch (err) {
     clearTimeout(timeout);
-    if (err.name === 'AbortError') throw new Error('Request timed out');
-    if (attempt < 3 && !err.message.includes('error')) {
+
+    // Timeout or network error — try next proxy
+    if (err.name === 'AbortError' || err.message === 'Failed to fetch') {
+      if (proxyIdx < PROXIES.length - 1) {
+        console.warn(`Proxy ${proxyIdx} timed out, trying next…`);
+        return tdFetch(endpoint, params, 0, proxyIdx + 1);
+      }
+      throw new Error('All proxies failed. Check your internet connection.');
+    }
+
+    if (attempt < 2 && !err.message.includes('error')) {
       await new Promise(r => setTimeout(r, 1000 * 2 ** attempt));
-      return tdFetch(endpoint, params, attempt + 1);
+      return tdFetch(endpoint, params, attempt + 1, proxyIdx);
     }
     throw err;
   }
