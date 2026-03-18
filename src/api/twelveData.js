@@ -1,26 +1,11 @@
-/**
- * Twelve Data API Client
- * - API key loaded from src/config.js
- * - CORS proxy: corsproxy.io (required for browser → Twelve Data)
- * - Rate limiter: token bucket 8 req/min (free tier)
- * - Exponential backoff on 429
- */
-
-const TWELVE_DATA_API_KEY = '934f233f1c934c92a767bb9e52191d6d';
-
+const TWELVE_DATA_API_KEY = '934f233f1c934c92a767bb9e52191d6d';  // ← your key
 const BASE_URL = 'https://api.twelvedata.com';
-const PROXIES = [
-  url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-  url => `https://corsproxy.io/?url=${encodeURIComponent(url)}&_=${Date.now()}`,
-];
 
-// ── Token Bucket (8 req / 60s) ───────────────────────────────────────────────
+// ── Token Bucket (8 req / 60s free tier) ─────────────────────────────────────
 const BUCKET = { tokens: 8, lastRefill: Date.now(), queue: [], draining: false };
 
 function refillTokens() {
-  const elapsed = Date.now() - BUCKET.lastRefill;
-  if (elapsed >= 60_000) {
+  if (Date.now() - BUCKET.lastRefill >= 60_000) {
     BUCKET.tokens = 8;
     BUCKET.lastRefill = Date.now();
   }
@@ -47,20 +32,18 @@ function acquireToken() {
   return new Promise(resolve => { BUCKET.queue.push({ resolve }); drainQueue(); });
 }
 
-// ── Core fetch with CORS proxy + retry ───────────────────────────────────────
-async function tdFetch(endpoint, params, attempt = 0, proxyIdx = 0) {
+// ── Direct fetch — Twelve Data supports browser CORS natively ────────────────
+async function tdFetch(endpoint, params, attempt = 0) {
   await acquireToken();
 
-  const target = new URL(`${BASE_URL}${endpoint}`);
-  Object.entries(params).forEach(([k, v]) => target.searchParams.set(k, v));
-
-  const proxyUrl = PROXIES[proxyIdx](target.toString());
+  const url = new URL(`${BASE_URL}${endpoint}`);
+  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15_000);
 
   try {
-    const res = await fetch(proxyUrl, {
+    const res = await fetch(url.toString(), {
       signal: controller.signal,
       headers: { 'Accept': 'application/json' },
     });
@@ -68,55 +51,36 @@ async function tdFetch(endpoint, params, attempt = 0, proxyIdx = 0) {
 
     if (res.status === 429) {
       const delay = Math.min(2000 * 2 ** attempt, 32_000);
-      console.warn(`Rate limited, retrying in ${delay}ms`);
+      console.warn(`Twelve Data rate limit — retrying in ${delay}ms`);
       await new Promise(r => setTimeout(r, delay));
-      return tdFetch(endpoint, params, attempt + 1, proxyIdx);
+      return tdFetch(endpoint, params, attempt + 1);
     }
 
-    // Proxy itself failed — try next proxy
-    if (!res.ok) {
-      if (proxyIdx < PROXIES.length - 1) {
-        console.warn(`Proxy ${proxyIdx} failed (${res.status}), trying next…`);
-        return tdFetch(endpoint, params, 0, proxyIdx + 1);
-      }
-      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-    }
+    if (res.status === 401 || res.status === 403)
+      throw new Error('Invalid API key — check src/api/twelveData.js');
 
-    const text = await res.text();
-    let data;
-    try { data = JSON.parse(text); }
-    catch { throw new Error('Invalid JSON from proxy'); }
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
 
-    if (data.status === 'error') throw new Error(data.message || 'Twelve Data error');
+    const data = await res.json();
+    if (data.status === 'error') throw new Error(data.message || 'Twelve Data API error');
     return data;
 
   } catch (err) {
     clearTimeout(timeout);
-
-    // Timeout or network error — try next proxy
-    if (err.name === 'AbortError' || err.message === 'Failed to fetch') {
-      if (proxyIdx < PROXIES.length - 1) {
-        console.warn(`Proxy ${proxyIdx} timed out, trying next…`);
-        return tdFetch(endpoint, params, 0, proxyIdx + 1);
-      }
-      throw new Error('All proxies failed. Check your internet connection.');
-    }
-
-    if (attempt < 2 && !err.message.includes('error')) {
+    if (err.name === 'AbortError') throw new Error('Request timed out (15s)');
+    if (attempt < 3 && !err.message.includes('API key') && !err.message.includes('error')) {
       await new Promise(r => setTimeout(r, 1000 * 2 ** attempt));
-      return tdFetch(endpoint, params, attempt + 1, proxyIdx);
+      return tdFetch(endpoint, params, attempt + 1);
     }
     throw err;
   }
 }
 
-// ── Keep these exports so App.jsx doesn't break ──────────────────────────────
 export function getApiKey()   { return TWELVE_DATA_API_KEY; }
-export function setApiKey()   {}   // no-op — key is in config.js
+export function setApiKey()   {}
 export function clearApiKey() {}
-export function hasApiKey()   { return !!TWELVE_DATA_API_KEY; }
+export function hasApiKey()   { return !!TWELVE_DATA_API_KEY && TWELVE_DATA_API_KEY !== 'YOUR_KEY_HERE'; }
 
-// ── OHLCV ─────────────────────────────────────────────────────────────────────
 export async function fetchOHLCV(symbol, outputsize = 150, interval = '1day') {
   const sym  = symbol.trim().toUpperCase();
   const data = await tdFetch('/time_series', {
@@ -128,7 +92,7 @@ export async function fetchOHLCV(symbol, outputsize = 150, interval = '1day') {
   });
 
   if (!data.values?.length)
-    throw new Error(`No data for ${sym}. Check symbol or Twelve Data plan limits.`);
+    throw new Error(`No data returned for ${sym}. Check the symbol is valid.`);
 
   const bars = data.values.map(v => ({
     timestamp: new Date(v.datetime).getTime(),
@@ -151,7 +115,6 @@ export async function fetchOHLCV(symbol, outputsize = 150, interval = '1day') {
   };
 }
 
-// ── Quote ─────────────────────────────────────────────────────────────────────
 export async function fetchQuote(symbol) {
   const sym  = symbol.trim().toUpperCase();
   const data = await tdFetch('/quote', {
@@ -165,8 +128,8 @@ export async function fetchQuote(symbol) {
     previousClose: parseFloat(data.previous_close),
     change:        parseFloat(data.change),
     changePct:     parseFloat(data.percent_change),
-    currency:      data.currency  || 'USD',
-    exchangeName:  data.exchange  || '',
+    currency:      data.currency || 'USD',
+    exchangeName:  data.exchange || '',
     marketState:   data.is_market_open ? 'REGULAR' : 'CLOSED',
     volume:        parseFloat(data.volume) || 0,
   };
