@@ -1,13 +1,99 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useStockData } from './hooks/useStockData';
 import { PriceChart } from './components/PriceChart';
 import { SignalPanel } from './components/SignalPanel';
 import { KellyPanel, RegimePanel } from './components/KellyRegimePanel';
 import { TradeCard } from './components/TradeCard';
+import { getApiKey, setApiKey, hasApiKey } from './api/twelveData';
 
 const PRESETS = ['AAPL', 'TSLA', 'NVDA', 'SPY', 'QQQ', 'MSFT', 'AMZN', 'META'];
 
-function Header({ symbol, quote, usingHourly, countdown, autoRefresh, onToggle, onRefreshNow, loadingStep }) {
+// ── API Key Modal ─────────────────────────────────────────────────────────────
+function ApiKeyModal({ onSave }) {
+  const [key, setKey] = useState('');
+  const [show, setShow] = useState(false);
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      zIndex: 1000, backdropFilter: 'blur(4px)',
+    }}>
+      <div style={{
+        background: 'var(--bg-panel)', border: '1px solid var(--border-bright)',
+        borderRadius: 8, padding: 32, width: 420, boxShadow: '0 0 60px rgba(0,180,216,0.15)',
+      }}>
+        <div style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 800, color: 'var(--cyan)', marginBottom: 8 }}>
+          Twelve Data API Key
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 20, lineHeight: 1.7 }}>
+          This app uses <strong style={{ color: 'var(--text-primary)' }}>Twelve Data</strong> for market data.
+          Your key is stored only in your browser (localStorage) and never sent anywhere except Twelve Data's API.
+          <br /><br />
+          Free tier: <strong style={{ color: 'var(--green)' }}>800 requests/day · 8/min</strong> — sufficient for normal use.
+          <br />
+          Get a free key at{' '}
+          <a href="https://twelvedata.com/pricing" target="_blank" rel="noreferrer"
+             style={{ color: 'var(--cyan)' }}>twelvedata.com/pricing</a>
+        </div>
+
+        <div style={{ position: 'relative', marginBottom: 16 }}>
+          <input
+            type={show ? 'text' : 'password'}
+            value={key}
+            onChange={e => setKey(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && key.trim() && onSave(key.trim())}
+            placeholder="Paste your API key here…"
+            style={{
+              width: '100%', padding: '10px 44px 10px 14px',
+              background: 'var(--bg-base)', border: '1px solid var(--border-bright)',
+              borderRadius: 4, color: 'var(--text-primary)',
+              fontFamily: 'var(--font-mono)', fontSize: 13, outline: 'none',
+              boxSizing: 'border-box',
+            }}
+          />
+          <button onClick={() => setShow(s => !s)} style={{
+            position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+            background: 'none', border: 'none', cursor: 'pointer',
+            color: 'var(--text-dim)', fontSize: 14,
+          }}>{show ? '🙈' : '👁'}</button>
+        </div>
+
+        <button
+          onClick={() => key.trim() && onSave(key.trim())}
+          disabled={!key.trim()}
+          style={{
+            width: '100%', padding: '11px',
+            background: key.trim() ? 'var(--cyan)' : 'rgba(0,180,216,0.2)',
+            color: key.trim() ? '#000' : 'var(--text-dim)',
+            border: '1px solid var(--cyan)', borderRadius: 4,
+            fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700,
+            letterSpacing: '0.1em', cursor: key.trim() ? 'pointer' : 'not-allowed',
+          }}
+        >
+          SAVE KEY & CONTINUE
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── API Key Settings Button ────────────────────────────────────────────────────
+function ApiKeyBadge({ onEdit }) {
+  return (
+    <button onClick={onEdit} title="Change Twelve Data API key"
+      style={{
+        padding: '4px 10px', background: 'rgba(0,255,136,0.08)',
+        border: '1px solid rgba(0,255,136,0.3)', borderRadius: 3,
+        color: 'var(--green)', fontFamily: 'var(--font-mono)',
+        fontSize: 9, fontWeight: 700, letterSpacing: '0.08em',
+        cursor: 'pointer',
+      }}
+    >🔑 TD KEY SET</button>
+  );
+}
+
+function Header({ symbol, quote, usingHourly, countdown, autoRefresh, onToggle, onRefreshNow, loadingStep, apiKeyBadge }) {
   const change = quote?.price && quote?.previousClose
     ? quote.price - quote.previousClose : 0;
   const changePct = quote?.previousClose ? (change / quote.previousClose) * 100 : 0;
@@ -16,7 +102,7 @@ function Header({ symbol, quote, usingHourly, countdown, autoRefresh, onToggle, 
   // Format countdown mm:ss
   const mins = countdown != null ? Math.floor(countdown / 60) : null;
   const secs = countdown != null ? String(countdown % 60).padStart(2, '0') : null;
-  const countdownPct = countdown != null ? (countdown / 300) * 100 : 0;
+  const countdownPct = countdown != null ? (countdown / 600) * 100 : 0;
 
   return (
     <header style={{
@@ -57,6 +143,7 @@ function Header({ symbol, quote, usingHourly, countdown, autoRefresh, onToggle, 
 
       {/* Auto-refresh controls */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginLeft: 'auto' }}>
+        {apiKeyBadge}
         {loadingStep && (
           <span style={{ fontSize: 10, color: 'var(--cyan)', animation: 'pulse 1s infinite' }}>
             ⚡ {loadingStep}
@@ -168,17 +255,30 @@ function LoadingScreen({ step }) {
 
 export default function App() {
   const [input, setInput] = useState('');
+  const [showApiModal, setShowApiModal] = useState(!hasApiKey());
   const { status, error, results, loadingStep, analyze, countdown, autoRefresh, toggleAutoRefresh, refreshNow } = useStockData();
 
+  const handleSaveKey = (key) => {
+    setApiKey(key);
+    setShowApiModal(false);
+  };
+
   const handleSubmit = (sym) => {
+    if (!hasApiKey()) { setShowApiModal(true); return; }
     const s = (sym || input).trim().toUpperCase();
     if (!s) return;
     setInput(s);
     analyze(s);
   };
 
+  // Show modal if error is specifically about missing API key
+  useEffect(() => {
+    if (error === 'NO_API_KEY') setShowApiModal(true);
+  }, [error]);
+
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg-base)' }}>
+      {showApiModal && <ApiKeyModal onSave={handleSaveKey} />}
       <Header
         symbol={results?.symbol}
         quote={results?.quote}
@@ -188,6 +288,7 @@ export default function App() {
         onToggle={toggleAutoRefresh}
         onRefreshNow={refreshNow}
         loadingStep={status === 'success' ? loadingStep : ''}
+        apiKeyBadge={<ApiKeyBadge onEdit={() => setShowApiModal(true)} />}
       />
 
       <main style={{ maxWidth: 1440, margin: '0 auto', padding: '20px' }}>
@@ -296,8 +397,9 @@ export default function App() {
                 <KellyPanel kelly={results.kelly} />
                 <div style={{ fontSize: 10, color: 'var(--text-dim)', padding: '8px 12px', borderTop: '1px solid var(--border)', lineHeight: 1.8 }}>
                   {results.usingHourly
-                    ? 'OFI & VPIN computed on 1h bars · Kelly & HMM on 1d bars'
-                    : 'All models on 1d bars (hourly unavailable for this symbol)'}
+                    ? 'OFI/VPIN on 1h bars · Kelly/HMM on 1d bars · Twelve Data'
+                    : 'All models on 1d bars · Twelve Data'}
+                  <br />EMA 21/55 · ATR 13 · RSI 13 · VPIN 55 · Kelly 34/89 · HMM vol 13 <span style={{ color: 'var(--cyan)', opacity: 0.5 }}>[Fib]</span>
                   <br />Computed {new Date(results.computedAt).toLocaleTimeString()}
                   <br /><span style={{ color: 'rgba(255,255,255,0.15)' }}>Educational only · Not financial advice</span>
                 </div>
@@ -314,9 +416,9 @@ export default function App() {
               Swing Trade Signal Engine
             </div>
             <div style={{ fontSize: 13, color: 'var(--text-secondary)', maxWidth: 520, margin: '0 auto', lineHeight: 1.9 }}>
-              Enter any US stock symbol for a 2-day to 2-week swing trade analysis.
-              Dual timeframe: 1h bars for OFI & VPIN entry timing,
-              daily bars for Kelly sizing & HMM regime detection.
+              Enter any US stock symbol. Data from <strong style={{ color: 'var(--cyan)' }}>Twelve Data</strong>.
+              Dual timeframe: 1h bars for OFI & VPIN timing, daily for Kelly & HMM regime.
+              All indicator periods set to <strong style={{ color: 'var(--green)' }}>Fibonacci numbers</strong>.
             </div>
             <div style={{ display: 'flex', gap: 6, justifyContent: 'center', marginTop: 20, flexWrap: 'wrap' }}>
               {['🎯 Trade Direction', '⛔ Stop Loss (1.5×ATR)', '🚀 Targets (2×/3.5×ATR)',
