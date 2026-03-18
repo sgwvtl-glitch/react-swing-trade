@@ -63,12 +63,12 @@ export function useStockData() {
 
     try {
       setLoadingStep('Fetching daily bars (6mo)…');
-      const { meta, bars: dailyBars } = await fetchOHLCV(sym, '6mo', '1d');
+      const { meta, bars: dailyBars } = await fetchOHLCV(sym, 150, '1day');
 
       setLoadingStep('Fetching hourly bars (60d)…');
       let hourlyBars = [];
       try {
-        const { bars } = await fetchOHLCV(sym, '60d', '1h');
+        const { bars } = await fetchOHLCV(sym, 500, '1h');
         hourlyBars = bars;
       } catch {
         hourlyBars = dailyBars;
