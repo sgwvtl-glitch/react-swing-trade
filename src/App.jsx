@@ -351,7 +351,7 @@ export default function App() {
           }}>
             <strong>⚠ Error:</strong> {error}
             <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
-              This may be a CORS or rate limit issue. Wait a few seconds and retry. Yahoo Finance temporarily blocks burst requests.
+              This may be a CORS issue or invalid API key. Check your key in src/api/twelveData.js and retry.
             </div>
           </div>
         )}
