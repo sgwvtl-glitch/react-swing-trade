@@ -1,26 +1,16 @@
 /**
  * Order Flow Imbalance — Model §1
  *
- * Since OHLCV data doesn't include a real limit order book,
- * we approximate order flow using Bulk Volume Classification (BVC):
- *
- *   V_buy(t)  = V(t) × Φ( (C(t) − C(t−1)) / σ_daily )
- *   V_sell(t) = V(t) − V_buy(t)
- *
- * where Φ is the standard normal CDF and σ_daily is the rolling
- * std-dev of daily returns (proxy for intraday tick noise).
- *
- * OFI(t) = Σ_k w_k (dBid_k − dAsk_k)
- *
- * For OHLCV bars, we use K rolling lags as the "depth levels":
- *   dBid_k ≈ V_buy(t−k) × Δprice_bid_k
- *   dAsk_k ≈ V_sell(t−k) × Δprice_ask_k
- *
- * Depth decay: w_k = exp(−λk) / Σ exp(−λj)  [λ = 0.5]
+ * Fibonacci parameters:
+ *   K_LEVELS = 5   (depth levels / lags)
+ *   std window = 21  (rolling σ for BVC classification)
+ *   avg window = 5   (signal summary)
  */
 
-const LAMBDA = 0.5;
-const K_LEVELS = 5; // number of depth levels / lags
+const LAMBDA   = 0.5;
+const K_LEVELS = 5;          // Fib ✓
+const STD_WIN  = 21;         // Fib (was 20)
+const AVG_WIN  = 5;          // Fib ✓
 
 /** Standard normal CDF (rational approximation) */
 function phi(x) {
@@ -31,7 +21,7 @@ function phi(x) {
 }
 
 /** Rolling std-dev of returns over window */
-function rollingStd(returns, i, window = 20) {
+function rollingStd(returns, i, window = STD_WIN) {
   const slice = returns.slice(Math.max(0, i - window), i + 1);
   if (slice.length < 2) return 1e-8;
   const mean = slice.reduce((a, b) => a + b, 0) / slice.length;
@@ -39,7 +29,7 @@ function rollingStd(returns, i, window = 20) {
   return Math.sqrt(variance) || 1e-8;
 }
 
-/** Depth-decay weights */
+/** Depth-decay weights w_k = exp(−λk) / Σ exp(−λj) */
 function depthWeights(k = K_LEVELS) {
   const raw = Array.from({ length: k }, (_, i) => Math.exp(-LAMBDA * (i + 1)));
   const sum = raw.reduce((a, b) => a + b, 0);
@@ -48,8 +38,8 @@ function depthWeights(k = K_LEVELS) {
 
 /**
  * Compute OFI time series from OHLCV bars.
- * @param {Array} bars  [{close, volume, ...}]
- * @returns {Array<{date, ofi, ofiNorm, vBuy, vSell}>}
+ * @param {Array} bars  [{date, close, volume, ...}]
+ * @returns {Array<{date, ofi, ofiNorm, vBuy, vSell, buyRatio}>}
  */
 export function computeOFI(bars) {
   const n = bars.length;
@@ -73,16 +63,9 @@ export function computeOFI(bars) {
     let ofi = 0;
     for (let k = 0; k < K_LEVELS; k++) {
       const idx = t - k;
-      // dBid: positive when price held/rose (buyers absorbed)
       const priceDelta = bars[idx].close - bars[idx - 1].close;
-      const dBid = priceDelta >= 0
-        ? vBuy[idx]
-        : -vBuy[idx - 1];
-      // dAsk: mirror for sell pressure
-      const dAsk = priceDelta <= 0
-        ? vSell[idx]
-        : -vSell[idx - 1];
-
+      const dBid = priceDelta >= 0 ? vBuy[idx] : -vBuy[idx - 1];
+      const dAsk = priceDelta <= 0 ? vSell[idx] : -vSell[idx - 1];
       ofi += weights[k] * (dBid - dAsk);
     }
     ofiSeries.push({
@@ -90,7 +73,7 @@ export function computeOFI(bars) {
       ofi,
       vBuy: vBuy[t],
       vSell: vSell[t],
-      buyRatio: vBuy[t] / bars[t].volume,
+      buyRatio: vBuy[t] / (bars[t].volume || 1),
     });
   }
 
@@ -102,17 +85,19 @@ export function computeOFI(bars) {
   return ofiSeries;
 }
 
-/** Latest OFI signal summary */
+/** Latest OFI signal summary (5-bar avg — Fib ✓) */
 export function ofiSignal(ofiBars) {
   if (!ofiBars.length) return null;
-  const last = ofiBars[ofiBars.length - 1];
-  const prev5 = ofiBars.slice(-5);
-  const avgNorm = prev5.reduce((a, b) => a + b.ofiNorm, 0) / prev5.length;
+  const last   = ofiBars[ofiBars.length - 1];
+  const prevN  = ofiBars.slice(-AVG_WIN);
+  const avgNorm = prevN.reduce((a, b) => a + b.ofiNorm, 0) / prevN.length;
 
   return {
-    current: last.ofiNorm,
-    avg5: avgNorm,
-    buyRatio: last.buyRatio,
-    direction: last.ofiNorm > 0.1 ? 'BUY PRESSURE' : last.ofiNorm < -0.1 ? 'SELL PRESSURE' : 'NEUTRAL',
+    current:   last.ofiNorm,
+    avg5:      avgNorm,
+    buyRatio:  last.buyRatio,
+    direction: last.ofiNorm > 0.1 ? 'BUY PRESSURE'
+             : last.ofiNorm < -0.1 ? 'SELL PRESSURE'
+             : 'NEUTRAL',
   };
 }

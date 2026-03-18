@@ -1,18 +1,24 @@
 /**
  * Swing Trade Signal Engine — 2-day to 2-week horizon
  *
- * Combines:
- *   - EMA 20/50 trend filter (daily bars)       → trend direction
- *   - ATR(14) for stop-loss & target placement  → risk sizing
- *   - OFI (1h bars) for entry timing            → entry trigger
- *   - VPIN (1h bars) toxicity gate              → flow filter
- *   - HMM regime overlay                        → size multiplier
- *   - Fractional Kelly                          → position %
- *
- * Outputs a single, actionable SwingTrade object.
+ * Fibonacci parameters:
+ *   EMA fast      = 21   (was 20)
+ *   EMA slow      = 55   (was 50)
+ *   ATR period    = 13   (was 14)
+ *   RSI period    = 13   (was 14)
+ *   Volume avg    = 21   (was 20)
+ *   Trend window  = 13   (was 14)
+ *   EMA slope     = 3    (Fib ✓)
  */
 
-// ── EMA ─────────────────────────────────────────────────────────────────────
+const EMA_FAST   = 21;   // Fib
+const EMA_SLOW   = 55;   // Fib
+const ATR_PERIOD = 13;   // Fib
+const RSI_PERIOD = 13;   // Fib
+const VOL_PERIOD = 21;   // Fib
+const SLOPE_BARS = 3;    // Fib ✓
+
+// ── EMA ──────────────────────────────────────────────────────────────────────
 function ema(prices, period) {
   const k = 2 / (period + 1);
   const result = [];
@@ -26,14 +32,13 @@ function ema(prices, period) {
   return result;
 }
 
-// ── ATR(14) ──────────────────────────────────────────────────────────────────
-function atr(bars, period = 14) {
+// ── ATR(13) ───────────────────────────────────────────────────────────────────
+function atr(bars, period = ATR_PERIOD) {
   const trs = bars.map((b, i) => {
     if (i === 0) return b.high - b.low;
-    const prevClose = bars[i - 1].close;
-    return Math.max(b.high - b.low, Math.abs(b.high - prevClose), Math.abs(b.low - prevClose));
+    const pc = bars[i - 1].close;
+    return Math.max(b.high - b.low, Math.abs(b.high - pc), Math.abs(b.low - pc));
   });
-  // Wilder smoothing
   let atrVal = trs.slice(0, period).reduce((a, b) => a + b, 0) / period;
   const result = Array(period - 1).fill(null);
   result.push(atrVal);
@@ -44,8 +49,8 @@ function atr(bars, period = 14) {
   return result;
 }
 
-// ── RSI(14) ──────────────────────────────────────────────────────────────────
-function rsi(prices, period = 14) {
+// ── RSI(13) ───────────────────────────────────────────────────────────────────
+function rsi(prices, period = RSI_PERIOD) {
   const result = Array(period).fill(null);
   let gains = 0, losses = 0;
   for (let i = 1; i <= period; i++) {
@@ -58,15 +63,15 @@ function rsi(prices, period = 14) {
 
   for (let i = period + 1; i < prices.length; i++) {
     const d = prices[i] - prices[i - 1];
-    avgGain = (avgGain * (period - 1) + Math.max(d, 0)) / period;
+    avgGain = (avgGain * (period - 1) + Math.max(d, 0))  / period;
     avgLoss = (avgLoss * (period - 1) + Math.max(-d, 0)) / period;
     result.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
   }
   return result;
 }
 
-// ── Volume Surge ──────────────────────────────────────────────────────────────
-function volumeSurge(bars, period = 20) {
+// ── Volume Surge (21-bar avg) ──────────────────────────────────────────────────
+function volumeSurge(bars, period = VOL_PERIOD) {
   return bars.map((b, i) => {
     if (i < period) return 1;
     const avg = bars.slice(i - period, i).reduce((a, c) => a + c.volume, 0) / period;
@@ -74,209 +79,163 @@ function volumeSurge(bars, period = 20) {
   });
 }
 
-// ── Trend Quality (ADX-proxy) ─────────────────────────────────────────────────
-function trendStrength(closes, period = 14) {
-  // Directional movement proxy: abs(EMA20 slope) normalized
-  const e20 = ema(closes, 20);
-  const valid = e20.filter(v => v != null);
-  if (valid.length < 5) return 0;
-  const recent = valid.slice(-5);
-  const slope = (recent[4] - recent[0]) / recent[0];
-  return Math.min(1, Math.abs(slope) * 50); // 0→1
-}
-
 /**
  * Main swing trade signal computation.
- *
- * @param {Object} params
- * @param {Array}  params.dailyBars   - [{date,open,high,low,close,volume}] 6mo daily
- * @param {Array}  params.hourlyBars  - [{date,open,high,low,close,volume}] 60d hourly
- * @param {Object} params.ofi         - ofiSignal() result (computed on hourly)
- * @param {Object} params.vpin        - computeVPIN() result (computed on hourly)
- * @param {Object} params.alpha       - computeAlpha() result
- * @param {Object} params.kelly       - computeKelly() result (computed on daily)
- * @param {Object} params.regime      - computeRegimes() result (computed on daily)
- * @returns {SwingTrade}
  */
 export function computeSwingSignal({ dailyBars, hourlyBars, ofi, vpin, alpha, kelly, regime }) {
-  if (!dailyBars || dailyBars.length < 30) return null;
+  if (!dailyBars || dailyBars.length < 34) return null;
 
-  const closes = dailyBars.map(b => b.close);
+  const closes       = dailyBars.map(b => b.close);
   const currentPrice = closes[closes.length - 1];
   const currentDate  = dailyBars[dailyBars.length - 1].date;
 
-  // ── Indicators ──────────────────────────────────────────────────────────────
-  const ema20arr = ema(closes, 20);
-  const ema50arr = ema(closes, 50);
-  const atr14arr = atr(dailyBars, 14);
-  const rsi14arr = rsi(closes, 14);
-  const volSurge = volumeSurge(dailyBars, 20);
+  // ── Indicators ─────────────────────────────────────────────────────────────
+  const ema21arr = ema(closes, EMA_FAST);    // 21-period (Fib)
+  const ema55arr = ema(closes, EMA_SLOW);    // 55-period (Fib)
+  const atr13arr = atr(dailyBars, ATR_PERIOD);
+  const rsi13arr = rsi(closes, RSI_PERIOD);
+  const volSurge = volumeSurge(dailyBars, VOL_PERIOD);
 
-  const ema20  = ema20arr[ema20arr.length - 1];
-  const ema50  = ema50arr[ema50arr.length - 1];
-  const atr14  = atr14arr[atr14arr.length - 1];
-  const rsi14  = rsi14arr[rsi14arr.length - 1];
+  const ema21  = ema21arr[ema21arr.length - 1];
+  const ema55  = ema55arr[ema55arr.length - 1];
+  const atr13  = atr13arr[atr13arr.length - 1];
+  const rsi13  = rsi13arr[rsi13arr.length - 1];
   const vSurge = volSurge[volSurge.length - 1];
 
-  // EMA slope direction (last 3 bars)
-  const ema20slope = ema20arr.slice(-4).filter(Boolean);
-  const ema20Dir   = ema20slope.length >= 2
-    ? ema20slope[ema20slope.length - 1] > ema20slope[0] ? 1 : -1
+  // EMA slope over last 3 bars (Fib)
+  const ema21slope = ema21arr.slice(-(SLOPE_BARS + 1)).filter(Boolean);
+  const ema21Dir   = ema21slope.length >= 2
+    ? ema21slope[ema21slope.length - 1] > ema21slope[0] ? 1 : -1
     : 0;
 
-  // ── Trend Filter ────────────────────────────────────────────────────────────
-  const bullTrend = ema20 > ema50 && ema20Dir > 0 && currentPrice > ema20;
-  const bearTrend = ema20 < ema50 && ema20Dir < 0 && currentPrice < ema20;
-  const inTrend   = bullTrend || bearTrend;
+  // ── Trend Filter ───────────────────────────────────────────────────────────
+  const bullTrend = ema21 > ema55 && ema21Dir > 0 && currentPrice > ema21;
+  const bearTrend = ema21 < ema55 && ema21Dir < 0 && currentPrice < ema21;
 
-  // ── Gate Checks ─────────────────────────────────────────────────────────────
+  // ── Gates ──────────────────────────────────────────────────────────────────
   const vpinToxic   = vpin?.isToxic ?? false;
-  const alphaStrong = Math.abs(alpha?.alpha ?? 0) > alpha?.threshold;
+  const alphaStrong = Math.abs(alpha?.alpha ?? 0) > (alpha?.threshold ?? 0.15);
   const ofiDir      = ofi?.current ?? 0;
   const regimeState = regime?.currentRegime ?? 'VOLATILE';
   const kellySize   = kelly?.fAdj ?? 0;
 
-  // RSI gates: avoid overbought/oversold extremes for swing entries
-  const rsiOk = rsi14 != null
-    ? (alpha?.alpha > 0 ? rsi14 < 75 : rsi14 > 25)   // long: not overbought, short: not oversold
+  // RSI gate: long not overbought (>75), short not oversold (<25)
+  const rsiOk = rsi13 != null
+    ? ((alpha?.alpha ?? 0) > 0 ? rsi13 < 75 : rsi13 > 25)
     : true;
 
-  // Volume confirmation
-  const volOk = vSurge >= 0.8;  // at least 80% of avg volume
-
-  // ── Signal Scoring (0–100) ───────────────────────────────────────────────────
+  // ── Conviction Score ────────────────────────────────────────────────────────
   let score = 0;
-  const reasons = [];
+  const reasons  = [];
   const warnings = [];
 
-  // EMA trend (+25)
-  if (bullTrend && (alpha?.alpha ?? 0) > 0) { score += 25; reasons.push('EMA 20>50 bullish trend'); }
-  else if (bearTrend && (alpha?.alpha ?? 0) < 0) { score += 25; reasons.push('EMA 20<50 bearish trend'); }
-  else { warnings.push('Price vs EMA trend misaligned'); }
-
-  // Alpha signal (+25)
-  if (alphaStrong) { score += 25; reasons.push(`Alpha signal ${(alpha?.alpha ?? 0) > 0 ? 'bullish' : 'bearish'} (|α|>${alpha?.threshold})`); }
-  else { warnings.push('Alpha below threshold θ'); }
-
-  // OFI confirmation (+20)
-  if (Math.abs(ofiDir) > 0.1 && Math.sign(ofiDir) === Math.sign(alpha?.alpha ?? 0)) {
-    score += 20; reasons.push('OFI confirms direction');
-  } else { warnings.push('OFI not confirming signal direction'); }
-
-  // VPIN clean (+15)
-  if (!vpinToxic) { score += 15; reasons.push('VPIN below toxic threshold'); }
-  else { warnings.push('⚠ TOXIC flow — position sizing reduced 50%'); }
-
-  // RSI (+10)
-  if (rsiOk) { score += 10; reasons.push(`RSI ${rsi14?.toFixed(1)} in swing range`); }
-  else { warnings.push(`RSI ${rsi14?.toFixed(1)} at extreme — pullback risk`); }
-
-  // Volume surge (+5)
-  if (vSurge >= 1.2) { score += 5; reasons.push(`Volume surge ${vSurge.toFixed(2)}×`); }
-
-  // Regime overlay: volatile regime docks 20 points
-  if (regimeState === 'VOLATILE') {
-    score = Math.max(0, score - 20);
-    warnings.push('Volatile regime — reduced conviction');
+  if (bullTrend && (alpha?.alpha ?? 0) > 0) {
+    score += 25; reasons.push(`EMA${EMA_FAST} > EMA${EMA_SLOW} — bullish trend confirmed`);
+  } else if (bearTrend && (alpha?.alpha ?? 0) < 0) {
+    score += 25; reasons.push(`EMA${EMA_FAST} < EMA${EMA_SLOW} — bearish trend confirmed`);
+  } else {
+    warnings.push(`EMA${EMA_FAST}/${EMA_SLOW} trend misaligned with alpha direction`);
   }
 
-  // ── Direction ───────────────────────────────────────────────────────────────
-  const rawDir = bullTrend ? 'LONG' : bearTrend ? 'SHORT' : (alpha?.alpha ?? 0) > 0 ? 'LONG' : 'SHORT';
-  const direction = vpinToxic ? 'FLAT' : score < 35 ? 'FLAT' : rawDir;
+  if (alphaStrong) {
+    score += 25; reasons.push(`Alpha signal ${(alpha?.alpha ?? 0) > 0 ? 'bullish' : 'bearish'} (|α| > θ)`);
+  } else {
+    warnings.push('Alpha below threshold θ — insufficient edge');
+  }
 
-  // ── ATR-based levels ─────────────────────────────────────────────────────────
-  const atrMult = {
-    stop:    1.5,   // 1.5 × ATR stop
-    target1: 2.0,   // 1:1.33 R:R minimum
-    target2: 3.5,   // 1:2.33 R:R extended
-  };
+  if (Math.abs(ofiDir) > 0.1 && Math.sign(ofiDir) === Math.sign(alpha?.alpha ?? 0)) {
+    score += 20; reasons.push('1h OFI confirms signal direction');
+  } else {
+    warnings.push('OFI not confirming direction on 1h bars');
+  }
 
-  const stopLoss   = direction === 'LONG'  ? currentPrice - atrMult.stop    * atr14
-                   : direction === 'SHORT' ? currentPrice + atrMult.stop    * atr14
-                   : null;
-  const target1    = direction === 'LONG'  ? currentPrice + atrMult.target1 * atr14
-                   : direction === 'SHORT' ? currentPrice - atrMult.target1 * atr14
-                   : null;
-  const target2    = direction === 'LONG'  ? currentPrice + atrMult.target2 * atr14
-                   : direction === 'SHORT' ? currentPrice - atrMult.target2 * atr14
-                   : null;
+  if (!vpinToxic) {
+    score += 15; reasons.push('VPIN below μ+1.5σ — clean flow');
+  } else {
+    warnings.push('⚠ TOXIC FLOW — VPIN exceeds threshold');
+  }
+
+  if (rsiOk) {
+    score += 10; reasons.push(`RSI(${RSI_PERIOD}) = ${rsi13?.toFixed(1)} in tradeable range`);
+  } else {
+    warnings.push(`RSI(${RSI_PERIOD}) = ${rsi13?.toFixed(1)} at extreme — entry risk`);
+  }
+
+  if (vSurge >= 1.2) {
+    score += 5; reasons.push(`Volume surge ${vSurge.toFixed(2)}× (${VOL_PERIOD}-bar avg)`);
+  }
+
+  if (regimeState === 'VOLATILE') {
+    score = Math.max(0, score - 20);
+    warnings.push('Volatile HMM regime — conviction docked 20pts');
+  }
+
+  // ── Direction & Position ────────────────────────────────────────────────────
+  const rawDir  = bullTrend ? 'LONG' : bearTrend ? 'SHORT' : (alpha?.alpha ?? 0) > 0 ? 'LONG' : 'SHORT';
+  const direction = vpinToxic || score < 35 ? 'FLAT' : rawDir;
+
+  // ── ATR(13) Levels ──────────────────────────────────────────────────────────
+  const stopLoss = direction === 'LONG'  ? currentPrice - 1.5 * atr13
+                 : direction === 'SHORT' ? currentPrice + 1.5 * atr13
+                 : null;
+  const target1  = direction === 'LONG'  ? currentPrice + 2   * atr13
+                 : direction === 'SHORT' ? currentPrice - 2   * atr13
+                 : null;
+  const target2  = direction === 'LONG'  ? currentPrice + 3.5 * atr13
+                 : direction === 'SHORT' ? currentPrice - 3.5 * atr13
+                 : null;
 
   const riskPct    = stopLoss ? Math.abs(currentPrice - stopLoss) / currentPrice : 0;
   const reward1Pct = target1  ? Math.abs(target1 - currentPrice)  / currentPrice : 0;
   const reward2Pct = target2  ? Math.abs(target2 - currentPrice)  / currentPrice : 0;
-  const rrRatio1   = riskPct > 0 ? reward1Pct / riskPct : 0;
-  const rrRatio2   = riskPct > 0 ? reward2Pct / riskPct : 0;
+  const rrRatio1   = riskPct  > 0 ? reward1Pct / riskPct : 0;
+  const rrRatio2   = riskPct  > 0 ? reward2Pct / riskPct : 0;
 
-  // ── Holding Period Estimate ──────────────────────────────────────────────────
-  // Base on regime + signal strength
-  let holdDaysMin = 2, holdDaysMax = 5;
-  if (regimeState === 'TRENDING')       { holdDaysMin = 5;  holdDaysMax = 14; }
-  if (regimeState === 'MEAN_REVERTING') { holdDaysMin = 2;  holdDaysMax = 5;  }
-  if (regimeState === 'VOLATILE')       { holdDaysMin = 1;  holdDaysMax = 3;  }
+  // ── Holding Period by Regime ────────────────────────────────────────────────
+  const holdRange = {
+    TRENDING:       [5,  14],
+    MEAN_REVERTING: [2,  5],
+    VOLATILE:       [1,  3],
+  }[regimeState] ?? [2, 5];
+  const [holdDaysMin, holdDaysMax] = holdRange;
 
-  // ── Position Size ────────────────────────────────────────────────────────────
-  // Kelly-adjusted, halved if toxic, halved if volatile
+  // ── Kelly-Adjusted Position Size ───────────────────────────────────────────
   let positionPct = kellySize * 100;
   if (vpinToxic)              positionPct *= 0.5;
   if (regimeState === 'VOLATILE') positionPct *= 0.5;
-  positionPct = Math.max(0, Math.min(positionPct, 25)); // hard cap 25%
+  positionPct = Math.max(0, Math.min(positionPct, 25));
 
-  // ── Exit Rule ────────────────────────────────────────────────────────────────
+  // ── Exit Rules ─────────────────────────────────────────────────────────────
   const exitRules = [];
-  if (stopLoss)  exitRules.push(`Stop loss: $${stopLoss.toFixed(2)} (${(riskPct * 100).toFixed(1)}% risk, 1.5×ATR)`);
-  if (target1)   exitRules.push(`Target 1:  $${target1.toFixed(2)} (${(reward1Pct * 100).toFixed(1)}% gain, R:R ${rrRatio1.toFixed(2)})`);
-  if (target2)   exitRules.push(`Target 2:  $${target2.toFixed(2)} (${(reward2Pct * 100).toFixed(1)}% gain, R:R ${rrRatio2.toFixed(2)})`);
-  exitRules.push(`Time exit: close if no momentum after ${holdDaysMax} trading days`);
-  exitRules.push(`Alpha exit: close if α reverts past 0 after entry`);
+  if (stopLoss) exitRules.push(`Stop loss: $${stopLoss.toFixed(2)} (1.5 × ATR${ATR_PERIOD} = ${(riskPct * 100).toFixed(1)}%)`);
+  if (target1)  exitRules.push(`Target 1:  $${target1.toFixed(2)}  (2.0 × ATR${ATR_PERIOD}, R:R ${rrRatio1.toFixed(2)})`);
+  if (target2)  exitRules.push(`Target 2:  $${target2.toFixed(2)}  (3.5 × ATR${ATR_PERIOD}, R:R ${rrRatio2.toFixed(2)})`);
+  exitRules.push(`Time exit: close position after ${holdDaysMax} trading days if no momentum`);
+  exitRules.push(`Alpha exit: close if combined α reverts past zero after entry`);
+  exitRules.push(`VPIN exit:  reduce 50% if VPIN crosses μ+1.5σ while in trade`);
 
-  // ── Conviction Grade ─────────────────────────────────────────────────────────
-  const grade = score >= 80 ? 'A'
-              : score >= 65 ? 'B'
-              : score >= 50 ? 'C'
-              : score >= 35 ? 'D'
-              : 'F';
-
+  const grade = score >= 80 ? 'A' : score >= 65 ? 'B' : score >= 50 ? 'C' : score >= 35 ? 'D' : 'F';
   const gradeLabel = { A: 'HIGH CONVICTION', B: 'MODERATE', C: 'LOW CONVICTION', D: 'SPECULATIVE', F: 'NO TRADE' };
 
   return {
-    // Core decision
-    direction,
-    score,
-    grade,
-    gradeLabel: gradeLabel[grade],
+    direction, score, grade, gradeLabel: gradeLabel[grade],
     shouldTrade: direction !== 'FLAT' && grade !== 'F',
-
-    // Levels
-    currentPrice,
-    stopLoss,
-    target1,
-    target2,
-    riskPct,
-    reward1Pct,
-    reward2Pct,
-    rrRatio1,
-    rrRatio2,
-    atr14,
-
-    // Sizing & timing
-    positionPct,
-    holdDaysMin,
-    holdDaysMax,
-    currentDate,
-
-    // Indicators for display
+    currentPrice, stopLoss, target1, target2,
+    riskPct, reward1Pct, reward2Pct, rrRatio1, rrRatio2,
+    atr13, positionPct, holdDaysMin, holdDaysMax, currentDate,
     indicators: {
-      ema20, ema50, rsi14, atr14, vSurge,
-      ema20arr: ema20arr.slice(-90),
-      ema50arr: ema50arr.slice(-90),
-      atr14arr: atr14arr.slice(-90),
-      rsi14arr: rsi14arr.slice(-90),
-      bullTrend, bearTrend, inTrend, ema20Dir,
+      ema21, ema55, rsi13, atr13, vSurge,
+      ema20arr: ema21arr.slice(-90),   // keep prop names for PriceChart compat
+      ema50arr: ema55arr.slice(-90),
+      atr14arr: atr13arr.slice(-90),
+      rsi14arr: rsi13arr.slice(-90),
+      bullTrend, bearTrend, inTrend: bullTrend || bearTrend, ema20Dir: ema21Dir,
+      // Fib labels for display
+      emaFastPeriod: EMA_FAST,
+      emaSlowPeriod: EMA_SLOW,
+      rsiPeriod: RSI_PERIOD,
+      atrPeriod: ATR_PERIOD,
     },
-
-    // Explanation
-    reasons,
-    warnings,
-    exitRules,
+    reasons, warnings, exitRules,
   };
 }
