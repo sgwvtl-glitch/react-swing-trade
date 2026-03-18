@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { fetchOHLCV, fetchQuote } from '../api/yahooFinance';
+import { fetchOHLCV, fetchQuote, hasApiKey } from '../api/twelveData';
 import { computeOFI, ofiSignal } from '../models/ofi';
 import { computeVPIN } from '../models/vpin';
 import { computeKelly } from '../models/kelly';
